@@ -126,6 +126,30 @@
   button.copiar:hover { background: var(--azul-escuro); }
   #copiado-msg { font-size: 12.5px; color: var(--grafite-3); }
 
+  table.tabela-limpa { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 6px; }
+  table.tabela-limpa th {
+    text-align: left; font-size: 11.5px; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--grafite-3); font-weight: 500; padding: 7px 10px; border-bottom: 1.5px solid var(--azul-suave);
+  }
+  table.tabela-limpa td { padding: 8px 10px; border-bottom: 1px solid #f0ede4; color: var(--grafite-2); vertical-align: top; }
+  table.tabela-limpa tr:last-child td { border-bottom: none; }
+  table.tabela-limpa td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--grafite-1); }
+  table.tabela-limpa .comentario { color: var(--grafite-3); font-size: 12px; }
+  .saldo-pos { color: var(--alerta); }
+  .saldo-neg { color: #3E6B4F; }
+
+  .ranking-linha {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 9px 10px; border-bottom: 1px solid #f0ede4; cursor: pointer; font-size: 13.5px;
+  }
+  .ranking-linha:hover { background: #ffffff88; }
+  .ranking-linha .num { font-variant-numeric: tabular-nums; color: var(--grafite-1); font-weight: 500; }
+  .ranking-detalhe {
+    display: none; padding: 6px 10px 10px 20px; font-size: 12.5px; color: var(--grafite-3);
+  }
+  .ranking-detalhe.aberto { display: block; }
+  .ranking-detalhe div { display: flex; justify-content: space-between; padding: 2px 0; }
+
   /* ---- Painel direito: capa autoral ---- */
   .marca {
     background: var(--azul);
@@ -241,6 +265,24 @@
         </details>
       </div>
 
+      <div class="bloco">
+        <h2>Resumo de todos os processos (últimos 7 dias)</h2>
+        <div class="hint" style="margin-bottom:6px;">Parados = em aberto sem atualização há mais de 7 dias (30 dias no Jurídico)</div>
+        <div id="resumoProcessosTabela"></div>
+      </div>
+
+      <div class="bloco">
+        <h2>Cards mais parados por processo</h2>
+        <div class="hint" style="margin-bottom:6px;">Até 3 por processo, ordenados pelo tempo sem atualização</div>
+        <div id="paradosTabela"></div>
+      </div>
+
+      <div class="bloco">
+        <h2>Ranking — cards ativos por pessoa</h2>
+        <div class="hint" style="margin-bottom:6px;">Clique num nome para ver a distribuição por processo</div>
+        <div id="rankingTabela"></div>
+      </div>
+
       <div class="acoes">
         <button class="copiar" id="btnCopiar">Copiar linha para a planilha</button>
         <span id="copiado-msg"></span>
@@ -265,6 +307,9 @@ const PIPE_INADIMPLENCIA = "1- Inadimplência";
 const PIPE_LOCACAO_HISTORICO = "1- Comercial";
 const PIPE_LOCACAO_ATUAL = "1- Efetivação da Locação";
 const CORTE_LOCACAO = new Date(2026, 4, 1); // 01/05/2026
+const JURIDICO_PIPES = ["99-Gestão de Demandas |Jurídico"];
+const LIMITE_PARADO_PADRAO = 7;
+const LIMITE_PARADO_JURIDICO = 30;
 
 function parseCell(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -314,6 +359,62 @@ function comparacaoJusta(rows, field) {
   return { atual, anterior };
 }
 
+function limiteParado(pipe) {
+  return JURIDICO_PIPES.includes(pipe) ? LIMITE_PARADO_JURIDICO : LIMITE_PARADO_PADRAO;
+}
+
+function resumoProcessos(rows, agora, seteDiasAtras) {
+  const porPipe = {};
+  rows.forEach(r => { if (!porPipe[r.Pipe]) porPipe[r.Pipe] = { iniciados: 0, concluidos: 0, parados: 0 }; });
+  rows.forEach(r => {
+    if (r._criado && r._criado >= seteDiasAtras && r._criado <= agora) porPipe[r.Pipe].iniciados++;
+    if (r._finalizado && r._finalizado >= seteDiasAtras && r._finalizado <= agora) porPipe[r.Pipe].concluidos++;
+  });
+  rows.forEach(r => {
+    if (r._finalizado || !r._atualizado) return;
+    const dias = (agora - r._atualizado) / 86400000;
+    if (dias > limiteParado(r.Pipe)) porPipe[r.Pipe].parados++;
+  });
+  return Object.entries(porPipe)
+    .map(([pipe, v]) => ({ pipe, ...v, saldo: v.iniciados - v.concluidos }))
+    .filter(l => l.iniciados > 0 || l.concluidos > 0 || l.parados > 0)
+    .sort((a, b) => b.iniciados - a.iniciados);
+}
+
+function cardsMaisParados(rows, agora) {
+  const porPipe = {};
+  rows.forEach(r => {
+    if (r._finalizado || !r._atualizado) return;
+    const dias = (agora - r._atualizado) / 86400000;
+    if (dias <= limiteParado(r.Pipe)) return;
+    if (!porPipe[r.Pipe]) porPipe[r.Pipe] = [];
+    porPipe[r.Pipe].push({ dias: Math.floor(dias), fase: r['Fase atual'] || '—', comentario: r['Último comentário'] || '(sem comentário)' });
+  });
+  const resultado = [];
+  Object.entries(porPipe).forEach(([pipe, cards]) => {
+    cards.sort((a, b) => b.dias - a.dias);
+    cards.slice(0, 3).forEach(c => resultado.push({ pipe, ...c }));
+  });
+  return resultado.sort((a, b) => b.dias - a.dias);
+}
+
+function rankingPessoas(rows) {
+  const ativos = rows.filter(r => !r._finalizado);
+  const porPessoa = {};
+  ativos.forEach(r => {
+    if (!r['Responsáveis']) return;
+    String(r['Responsáveis']).split(',').map(s => s.trim()).filter(Boolean).forEach(nome => {
+      if (!porPessoa[nome]) porPessoa[nome] = { total: 0, porPipe: {} };
+      porPessoa[nome].total++;
+      porPessoa[nome].porPipe[r.Pipe] = (porPessoa[nome].porPipe[r.Pipe] || 0) + 1;
+    });
+  });
+  return Object.entries(porPessoa)
+    .map(([nome, v]) => ({ nome, total: v.total, porPipe: Object.entries(v.porPipe).sort((a, b) => b[1] - a[1]) }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 15);
+}
+
 function calcular(rows) {
   const agora = new Date();
   const hojeMeiaNoite = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
@@ -324,6 +425,7 @@ function calcular(rows) {
     r._criado = parseCell(r['Criado em']);
     r._finalizado = parseCell(r['Finalizado em']);
     r._vencimento = parseCell(r['Data de vencimento']);
+    r._atualizado = parseCell(r['Atualizado em']);
   });
 
   // Financeiro
@@ -333,7 +435,7 @@ function calcular(rows) {
   const porPessoa = {};
   fin.forEach(r => { const k = r.Criador || '(sem criador)'; porPessoa[k] = (porPessoa[k]||0)+1; });
   const valoresDia = Object.values(porDia);
-  const mediaDia = valoresDia.length ? valoresDia.reduce((a,b)=>a+b,0)/valoresDia.length : 0;
+  const mediaDia = fin.length / 7;
   const diasAtipicos = Object.entries(porDia).filter(([k,v]) => valoresDia.length > 1 && v > mediaDia*3);
 
   // Vistorias
@@ -364,7 +466,10 @@ function calcular(rows) {
     vistorias: { mediana: medianaVis, n: vis.length },
     inadimplencia: inadCmp,
     locacoes: locCmp,
-    prazoPerdido: { total: atrasados.length, porPipe: topN(porPipe,5), porResp: topN(porResp,5) }
+    prazoPerdido: { total: atrasados.length, porPipe: topN(porPipe,5), porResp: topN(porResp,5) },
+    resumoProcessos: resumoProcessos(rows, agora, seteDiasAtras),
+    cardsParados: cardsMaisParados(rows, agora),
+    rankingPessoas: rankingPessoas(rows)
   };
 }
 
@@ -392,13 +497,17 @@ function render(res) {
   const alertaEl = document.getElementById('finAlerta');
   if (res.financeiro.diasAtipicos.length) {
     alertaEl.innerHTML = res.financeiro.diasAtipicos.map(([data,v]) =>
-      `<div class="alerta-box">Volume atípico em ${data} (${v} lançamentos) — confirme se é lançamento em lote antes de reportar.</div>`
+      `<div class="alerta-box">Volume atípico em ${data} (${v} lançamentos) — Pipe ${PIPE_FINANCEIRO} — confirme se é lançamento em lote antes de reportar.</div>`
     ).join('');
   } else {
     alertaEl.innerHTML = '';
   }
 
   document.getElementById('resultado').style.display = 'block';
+
+  renderResumoProcessos(res.resumoProcessos);
+  renderCardsParados(res.cardsParados);
+  renderRanking(res.rankingPessoas);
 
   document.getElementById('btnCopiar').onclick = () => {
     const linha = [
@@ -417,6 +526,54 @@ function render(res) {
       setTimeout(() => document.getElementById('copiado-msg').textContent = '', 4000);
     });
   };
+}
+
+function renderResumoProcessos(linhas) {
+  const el = document.getElementById('resumoProcessosTabela');
+  if (!linhas.length) { el.innerHTML = '<div style="color:#999;font-size:13px;">Sem movimento nos últimos 7 dias.</div>'; return; }
+  const linhasHtml = linhas.map(l => {
+    const saldoClasse = l.saldo > 0 ? 'saldo-pos' : (l.saldo < 0 ? 'saldo-neg' : '');
+    const saldoTexto = l.saldo > 0 ? `+${l.saldo}` : l.saldo;
+    return `<tr>
+      <td>${l.pipe}</td>
+      <td class="num">${l.iniciados}</td>
+      <td class="num">${l.concluidos}</td>
+      <td class="num ${saldoClasse}">${saldoTexto}</td>
+      <td class="num">${l.parados}</td>
+    </tr>`;
+  }).join('');
+  el.innerHTML = `<table class="tabela-limpa">
+    <thead><tr><th>Processo</th><th>Iniciados</th><th>Concluídos</th><th>Saldo</th><th>Parados</th></tr></thead>
+    <tbody>${linhasHtml}</tbody>
+  </table>`;
+}
+
+function renderCardsParados(cards) {
+  const el = document.getElementById('paradosTabela');
+  if (!cards.length) { el.innerHTML = '<div style="color:#999;font-size:13px;">Nenhum card parado acima do limite.</div>'; return; }
+  const linhasHtml = cards.map(c => `<tr>
+    <td>${c.pipe}</td>
+    <td class="num">${c.dias}d</td>
+    <td>${c.fase}</td>
+    <td class="comentario">${String(c.comentario).slice(0,90)}${String(c.comentario).length>90?'…':''}</td>
+  </tr>`).join('');
+  el.innerHTML = `<table class="tabela-limpa">
+    <thead><tr><th>Processo</th><th>Parado há</th><th>Fase atual</th><th>Último comentário</th></tr></thead>
+    <tbody>${linhasHtml}</tbody>
+  </table>`;
+}
+
+function renderRanking(ranking) {
+  const el = document.getElementById('rankingTabela');
+  el.innerHTML = ranking.map((p, i) => `
+    <div class="ranking-linha" onclick="document.getElementById('rk-${i}').classList.toggle('aberto')">
+      <span>${p.nome}</span>
+      <span class="num">${p.total}</span>
+    </div>
+    <div class="ranking-detalhe" id="rk-${i}">
+      ${p.porPipe.map(([pipe,n]) => `<div><span>${pipe}</span><span>${n}</span></div>`).join('')}
+    </div>
+  `).join('');
 }
 
 function processarArquivo(file) {
