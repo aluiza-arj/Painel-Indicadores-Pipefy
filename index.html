@@ -264,6 +264,14 @@
             <div class="comparativo" id="locComparativo"></div>
           </div>
         </div>
+        <details>
+          <summary>Ver evolução mensal completa (Inadimplência e Locações)</summary>
+          <div id="evolucaoMensalTabela"></div>
+          <div class="acoes" style="margin-top:10px;">
+            <button class="copiar" id="btnCopiarEvolucao">Copiar para a aba Evolução Mensal</button>
+            <span id="copiado-evolucao"></span>
+          </div>
+        </details>
       </div>
 
       <div class="bloco">
@@ -285,22 +293,34 @@
         <h2>Resumo de todos os processos (últimos 7 dias)</h2>
         <div class="hint" style="margin-bottom:6px;">Parados = em aberto sem atualização há mais de 7 dias (30 dias no Jurídico). "—" = pipe de repositório permanente, não entra nessa contagem.</div>
         <div id="resumoProcessosTabela"></div>
+        <div class="acoes" style="margin-top:10px;">
+          <button class="copiar" id="btnCopiarResumo">Copiar para a aba Resumo de Processos</button>
+          <span id="copiado-resumo"></span>
+        </div>
       </div>
 
       <div class="bloco">
         <h2>Cards mais parados por processo</h2>
         <div class="hint" style="margin-bottom:6px;">Até 3 por processo, ordenados pelo tempo sem atualização</div>
         <div id="paradosTabela"></div>
+        <div class="acoes" style="margin-top:10px;">
+          <button class="copiar" id="btnCopiarParados">Copiar para a aba Cards Parados</button>
+          <span id="copiado-parados"></span>
+        </div>
       </div>
 
       <div class="bloco">
         <h2>Ranking — cards ativos por pessoa</h2>
         <div class="hint" style="margin-bottom:6px;">Clique num nome para ver a distribuição por processo</div>
         <div id="rankingTabela"></div>
+        <div class="acoes" style="margin-top:10px;">
+          <button class="copiar" id="btnCopiarRanking">Copiar para a aba Ranking Pessoas</button>
+          <span id="copiado-ranking"></span>
+        </div>
       </div>
 
       <div class="acoes">
-        <button class="copiar" id="btnCopiar">Copiar linha para a planilha</button>
+        <button class="copiar" id="btnCopiar">Copiar para a aba Snapshot Semanal</button>
         <span id="copiado-msg"></span>
       </div>
     </div>
@@ -458,6 +478,17 @@ function rankingPessoas(rows) {
     .slice(0, 15);
 }
 
+function serieMensal(rows, field) {
+  const porMes = {};
+  rows.forEach(r => {
+    if (!r[field]) return;
+    const d = r[field];
+    const chave = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    porMes[chave] = (porMes[chave] || 0) + 1;
+  });
+  return Object.entries(porMes).sort((a,b) => a[0].localeCompare(b[0])).map(([mes, valor]) => ({ mes, valor }));
+}
+
 function calcular(rows) {
   const agora = new Date();
   const hojeMeiaNoite = new Date(agora.getFullYear(), agora.getMonth(), agora.getDate());
@@ -489,10 +520,17 @@ function calcular(rows) {
   // Inadimplencia
   const inad = rows.filter(r => r.Pipe === PIPE_INADIMPLENCIA);
   const inadCmp = comparacaoJusta(inad, '_criado');
+  const inadSerie = serieMensal(inad, '_criado');
 
   // Locacoes
   const loc = rows.filter(r => (r.Pipe === PIPE_LOCACAO_HISTORICO && r._criado && r._criado < CORTE_LOCACAO) || r.Pipe === PIPE_LOCACAO_ATUAL);
   const locCmp = comparacaoJusta(loc, '_criado');
+  const locSerie = serieMensal(loc, '_criado');
+
+  const evolucaoMensal = [
+    ...inadSerie.map(x => ({ mes: x.mes, indicador: 'Inadimplência', valor: x.valor })),
+    ...locSerie.map(x => ({ mes: x.mes, indicador: 'Locações', valor: x.valor })),
+  ].sort((a,b) => a.mes.localeCompare(b.mes));
 
   // Prazo perdido
   const atrasados = rows.filter(r => r._vencimento && r._vencimento < agora && !r._finalizado);
@@ -512,12 +550,35 @@ function calcular(rows) {
     prazoPerdido: { total: atrasados.length, porPipe: topN(porPipe,5), porResp: topN(porResp,5) },
     resumoProcessos: resumoProcessos(rows, agora, seteDiasAtras),
     cardsParados: cardsMaisParados(rows, agora),
-    rankingPessoas: rankingPessoas(rows)
+    rankingPessoas: rankingPessoas(rows),
+    evolucaoMensal
   };
 }
 
 function renderTabela(el, entries) {
   el.innerHTML = entries.map(([k,v]) => `<div><span>${k}</span><span>${v}</span></div>`).join('') || '<div style="color:#999">Sem registros</div>';
+}
+
+function renderEvolucaoMensal(linhas) {
+  const el = document.getElementById('evolucaoMensalTabela');
+  if (!linhas.length) { el.innerHTML = '<div style="color:#999;font-size:13px;">Sem histórico suficiente.</div>'; return; }
+  const corpo = linhas.map(l => `<tr><td>${l.mes}</td><td>${l.indicador}</td><td class="num">${l.valor}</td></tr>`).join('');
+  el.innerHTML = `<table class="tabela-limpa"><thead><tr><th>Mês</th><th>Indicador</th><th>Valor</th></tr></thead><tbody>${corpo}</tbody></table>`;
+}
+
+function copiarComPadding(linhasTsv, numColunas, padTo, botaoId, msgId, msgTexto) {
+  const btn = document.getElementById(botaoId);
+  if (!btn) return;
+  btn.onclick = () => {
+    const linhaVazia = new Array(numColunas).fill('').join('\t');
+    const faltam = Math.max(0, padTo - linhasTsv.length);
+    const bloco = linhasTsv.concat(new Array(faltam).fill(linhaVazia)).join('\n');
+    navigator.clipboard.writeText(bloco).then(() => {
+      const msgEl = document.getElementById(msgId);
+      msgEl.textContent = msgTexto;
+      setTimeout(() => { msgEl.textContent = ''; }, 4000);
+    });
+  };
 }
 
 function render(res) {
@@ -551,6 +612,24 @@ function render(res) {
   renderResumoProcessos(res.resumoProcessos);
   renderCardsParados(res.cardsParados);
   renderRanking(res.rankingPessoas);
+  renderEvolucaoMensal(res.evolucaoMensal);
+
+  copiarComPadding(
+    res.evolucaoMensal.map(l => [l.mes, l.indicador, l.valor].join('\t')),
+    3, 80, 'btnCopiarEvolucao', 'copiado-evolucao', 'Copiado — cole na aba Evolução Mensal (a partir de A2)'
+  );
+  copiarComPadding(
+    res.resumoProcessos.map(l => [l.pipe, l.iniciados, l.concluidos, l.saldo, l.parados === null ? '' : l.parados].join('\t')),
+    5, 60, 'btnCopiarResumo', 'copiado-resumo', 'Copiado — cole na aba Resumo de Processos (a partir de A2)'
+  );
+  copiarComPadding(
+    res.cardsParados.map(c => [c.pipe, c.dias, c.fase, limparMencoes(c.comentario || '(sem comentário)').replace(/\*\*/g,'')].join('\t')),
+    4, 150, 'btnCopiarParados', 'copiado-parados', 'Copiado — cole na aba Cards Parados (a partir de A2)'
+  );
+  copiarComPadding(
+    res.rankingPessoas.map(p => [p.nome, p.total].join('\t')),
+    2, 30, 'btnCopiarRanking', 'copiado-ranking', 'Copiado — cole na aba Ranking Pessoas (a partir de A2)'
+  );
 
   document.getElementById('btnCopiar').onclick = () => {
     const linha = [
@@ -565,7 +644,7 @@ function render(res) {
       res.prazoPerdido.total
     ].join('\t');
     navigator.clipboard.writeText(linha).then(() => {
-      document.getElementById('copiado-msg').textContent = 'Copiado — cole direto na aba Snapshot Semanal';
+      document.getElementById('copiado-msg').textContent = 'Copiado — cole na célula A2 da aba Snapshot Semanal (sobrescreve a semana anterior)';
       setTimeout(() => document.getElementById('copiado-msg').textContent = '', 4000);
     });
   };
