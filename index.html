@@ -135,6 +135,8 @@
   table.tabela-limpa tr:last-child td { border-bottom: none; }
   table.tabela-limpa td.num { text-align: right; font-variant-numeric: tabular-nums; color: var(--grafite-1); }
   table.tabela-limpa .comentario { color: var(--grafite-3); font-size: 12px; }
+  table.tabela-limpa .comentario strong { color: var(--grafite-2); font-weight: 600; }
+  .sem-comentario { font-style: italic; opacity: 0.7; }
   .saldo-pos { color: var(--alerta); }
   .saldo-neg { color: #3E6B4F; }
 
@@ -267,7 +269,7 @@
 
       <div class="bloco">
         <h2>Resumo de todos os processos (últimos 7 dias)</h2>
-        <div class="hint" style="margin-bottom:6px;">Parados = em aberto sem atualização há mais de 7 dias (30 dias no Jurídico)</div>
+        <div class="hint" style="margin-bottom:6px;">Parados = em aberto sem atualização há mais de 7 dias (30 dias no Jurídico). "—" = pipe de repositório permanente, não entra nessa contagem.</div>
         <div id="resumoProcessosTabela"></div>
       </div>
 
@@ -310,6 +312,7 @@ const CORTE_LOCACAO = new Date(2026, 4, 1); // 01/05/2026
 const JURIDICO_PIPES = ["99-Gestão de Demandas |Jurídico"];
 const LIMITE_PARADO_PADRAO = 7;
 const LIMITE_PARADO_JURIDICO = 30;
+const PIPES_REPOSITORIO_PERMANENTE = ["3- Gestão de Lotes por Loteamento", "2-BANCO DE TALENTOS SITE"];
 
 function parseCell(v) {
   if (v === null || v === undefined || v === '') return null;
@@ -359,6 +362,34 @@ function comparacaoJusta(rows, field) {
   return { atual, anterior };
 }
 
+function limparMencoes(texto) {
+  if (!texto) return '';
+  // @[handle](123456) -> @handle -- mesma leitura que o Pipefy mostra nativamente
+  return String(texto).replace(/@\[([^\]]+)\]\(\d+\)/g, '@$1');
+}
+
+function tokenizarNegrito(texto) {
+  return texto.split(/(\*\*[^*]+\*\*)/g).filter(s => s.length).map(p => {
+    if (p.startsWith('**') && p.endsWith('**')) return { texto: p.slice(2, -2), negrito: true };
+    return { texto: p, negrito: false };
+  });
+}
+
+function comentarioHtml(textoOriginal, limite) {
+  if (!textoOriginal) return '<span class="sem-comentario">(sem comentário)</span>';
+  const tokens = tokenizarNegrito(limparMencoes(textoOriginal));
+  let restante = limite, html = '', cortou = false;
+  for (const tok of tokens) {
+    if (restante <= 0) { cortou = true; break; }
+    let trecho = tok.texto;
+    if (trecho.length > restante) { trecho = trecho.slice(0, restante); cortou = true; }
+    restante -= trecho.length;
+    html += tok.negrito ? `<strong>${trecho}</strong>` : trecho;
+    if (cortou) break;
+  }
+  return html + (cortou ? '…' : '');
+}
+
 function limiteParado(pipe) {
   return JURIDICO_PIPES.includes(pipe) ? LIMITE_PARADO_JURIDICO : LIMITE_PARADO_PADRAO;
 }
@@ -372,11 +403,12 @@ function resumoProcessos(rows, agora, seteDiasAtras) {
   });
   rows.forEach(r => {
     if (r._finalizado || !r._atualizado) return;
+    if (PIPES_REPOSITORIO_PERMANENTE.includes(r.Pipe)) return;
     const dias = (agora - r._atualizado) / 86400000;
     if (dias > limiteParado(r.Pipe)) porPipe[r.Pipe].parados++;
   });
   return Object.entries(porPipe)
-    .map(([pipe, v]) => ({ pipe, ...v, saldo: v.iniciados - v.concluidos }))
+    .map(([pipe, v]) => ({ pipe, ...v, saldo: v.iniciados - v.concluidos, parados: PIPES_REPOSITORIO_PERMANENTE.includes(pipe) ? null : v.parados }))
     .filter(l => l.iniciados > 0 || l.concluidos > 0 || l.parados > 0)
     .sort((a, b) => b.iniciados - a.iniciados);
 }
@@ -385,10 +417,11 @@ function cardsMaisParados(rows, agora) {
   const porPipe = {};
   rows.forEach(r => {
     if (r._finalizado || !r._atualizado) return;
+    if (PIPES_REPOSITORIO_PERMANENTE.includes(r.Pipe)) return;
     const dias = (agora - r._atualizado) / 86400000;
     if (dias <= limiteParado(r.Pipe)) return;
     if (!porPipe[r.Pipe]) porPipe[r.Pipe] = [];
-    porPipe[r.Pipe].push({ dias: Math.floor(dias), fase: r['Fase atual'] || '—', comentario: r['Último comentário'] || '(sem comentário)' });
+    porPipe[r.Pipe].push({ dias: Math.floor(dias), fase: r['Fase atual'] || '—', comentario: r['Último comentário'] });
   });
   const resultado = [];
   Object.entries(porPipe).forEach(([pipe, cards]) => {
@@ -539,7 +572,7 @@ function renderResumoProcessos(linhas) {
       <td class="num">${l.iniciados}</td>
       <td class="num">${l.concluidos}</td>
       <td class="num ${saldoClasse}">${saldoTexto}</td>
-      <td class="num">${l.parados}</td>
+      <td class="num">${l.parados === null ? '—' : l.parados}</td>
     </tr>`;
   }).join('');
   el.innerHTML = `<table class="tabela-limpa">
@@ -555,7 +588,7 @@ function renderCardsParados(cards) {
     <td>${c.pipe}</td>
     <td class="num">${c.dias}d</td>
     <td>${c.fase}</td>
-    <td class="comentario">${String(c.comentario).slice(0,90)}${String(c.comentario).length>90?'…':''}</td>
+    <td class="comentario">${comentarioHtml(c.comentario, 90)}</td>
   </tr>`).join('');
   el.innerHTML = `<table class="tabela-limpa">
     <thead><tr><th>Processo</th><th>Parado há</th><th>Fase atual</th><th>Último comentário</th></tr></thead>
